@@ -1,41 +1,149 @@
 # Lab 16 — Reflexion Agent Scaffold
 
-Repo này cung cấp một khung sườn (scaffold) để xây dựng và đánh giá **Reflexion Agent**.
+Repo này xây dựng và đánh giá **Reflexion Agent** — một kiến trúc agent tự cải thiện thông qua vòng lặp phản chiếu (reflection loop) trên bộ dữ liệu multi-hop QA (HotpotQA).
 
-## 1. Mục tiêu của Repo
-- Repo hiện tại đang sử dụng **Mock Data** (`mock_runtime.py`) để giả lập phản hồi từ LLM.
-- Mục đích giúp học viên hiểu rõ về **flow**, các bước **loop**, cách thức hoạt động của cơ chế phản chiếu (reflection) và cách đánh giá (evaluation) mà không tốn chi phí API ban đầu.
+---
 
-## 2. Nhiệm vụ của Học viên
-Học viên cần thực hiện các bước sau để hoàn thành bài lab:
-1. **Xây dựng Agent thật**: Thay thế phần mock bằng việc gọi LLM thật (sử dụng Local LLM như Ollama, vLLM hoặc các Simple LLM API như OpenAI, Gemini).
-2. **Chạy Benchmark thực tế**: Chạy đánh giá trên ít nhất **100 mẫu dữ liệu thật** từ bộ dataset **HotpotQA**.
-3. **Định dạng báo cáo**: Kết quả chạy phải đảm bảo xuất ra file report (`report.json` và `report.md`) có cùng định dạng (format) với code gốc để có thể chạy được công cụ chấm điểm tự động.
-4. **Tính toán Token thực tế**: Thay vì dùng số ước tính, học viên phải cài đặt logic tính toán lượng token tiêu thụ thực tế từ phản hồi của API.
+## 1. Những gì đã thực hiện
 
-## 3. Cách chạy Lab (Scaffold)
-```bash
-# Cài đặt môi trường
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+### 1.1 Tích hợp LLM thật (Groq API)
 
-# Chạy benchmark (với mock data)
-python run_benchmark.py --dataset data/hotpot_mini.json --out-dir outputs/sample_run
+Thay thế toàn bộ phần mock trong `mock_runtime.py` bằng gọi API thật tới **Groq** (model `llama-3.1-8b-instant`):
 
-# Chạy chấm điểm tự động
-python autograde.py --report-path outputs/sample_run/report.json
+- Kết nối Groq API với xác thực qua `GROQ_API_KEY` trong file `.env`
+- Thêm retry logic với exponential backoff để xử lý rate limit
+- **Tính toán token thực tế**: trích xuất `total_tokens` trực tiếp từ response của API thay vì dùng số ước tính
+
+### 1.2 Xây dựng Reflexion Agent hoàn chỉnh
+
+Triển khai đầy đủ vòng lặp Actor → Evaluator → Reflector trong `agents.py`:
+
+| Bước | Mô tả |
+|------|-------|
+| **Actor** | Sinh câu trả lời dựa trên câu hỏi, context và bộ nhớ phản chiếu tích lũy |
+| **Evaluator** | Đánh giá câu trả lời đúng/sai (trả về JSON có score 0/1 + lý do) |
+| **Reflector** | Khi sai: phân tích nguyên nhân, rút ra bài học, đề xuất chiến lược cho lần thử tiếp theo |
+| **Memory** | Các phản chiếu được lưu vào bộ nhớ và đưa vào prompt của lần thử sau |
+
+### 1.3 Các phần Bonus đã triển khai
+
+| Extension | Mô tả |
+|-----------|-------|
+| `structured_evaluator` | Evaluator trả về JSON có cấu trúc đầy đủ (score, reason, missing_evidence, spurious_claims) |
+| `reflection_memory` | Bộ nhớ phản chiếu tích lũy qua các lần thử, được đưa vào actor prompt |
+| `benchmark_report_json` | Xuất báo cáo JSON đầy đủ với metadata, metrics, failure modes và discussion |
+| `actual_token_tracking` | Theo dõi token thực tế từ API response thay vì ước tính |
+
+### 1.4 Chạy benchmark thực tế
+
+- Chạy trên **100 mẫu** từ bộ dữ liệu HotpotQA (`data/hotpot_100.json`)
+- So sánh hai kiến trúc: **ReAct** (baseline) vs **Reflexion** (tối đa 3 lần thử)
+- Kết quả được lưu tại `outputs/benchmark_run/`
+
+---
+
+## 2. Kết quả đạt được
+
+### Tóm tắt hiệu năng
+
+| Chỉ số | ReAct | Reflexion | Thay đổi |
+|--------|-------|-----------|---------|
+| **Độ chính xác (EM)** | 81% | 99% | **+18%** |
+| **Số lần thử trung bình** | 1.00 | 1.21 | +0.21 |
+| **Token trung bình** | 1,882 | 2,567 | +685 |
+| **Latency trung bình** | 19.6s | 25.8s | +6.2s |
+
+### Phân tích
+
+- **Reflexion cải thiện đáng kể độ chính xác** (+18%) chỉ với chi phí tăng nhẹ về token (+36%) và latency (+32%)
+- **Phần lớn cải thiện đến từ lần thử thứ 2**: agent phân tích lý do sai và điều chỉnh chiến lược trả lời
+- **Reflexion không hoàn hảo**: 1 câu hỏi vẫn sai sau 3 lần thử do context không đủ thông tin
+- **Rủi ro evaluator bias**: đôi khi evaluator chấp nhận câu trả lời gần đúng nhưng không khớp hoàn toàn với gold answer
+
+### Kết quả chi tiết
+
+```
+ReAct:      81/100 đúng,  19/100 sai
+Reflexion:  99/100 đúng,   1/100 sai
 ```
 
-## 4. Tiêu chí chấm điểm (Rubric)
-- **80% số điểm (80 điểm)**: Hoàn thiện đúng và đủ luồng (flow) cho Reflexion Agent, chạy thành công với LLM thật và dataset thật.
-- **20% số điểm (20 điểm)**: Thực hiện thêm ít nhất một trong các phần **Bonus** được nhắc đến trong mã nguồn (ví dụ: `structured_evaluator`, `reflection_memory`, `adaptive_max_attempts`, `memory_compression`, v.v. - xem chi tiết tại `autograde.py`).
+Báo cáo đầy đủ tại [`outputs/benchmark_run/report.md`](outputs/benchmark_run/report.md) và [`outputs/benchmark_run/report.json`](outputs/benchmark_run/report.json).
 
-## Thành phần mã nguồn
-- `src/reflexion_lab/schemas.py`: Định nghĩa các kiểu dữ liệu trace, record.
-- `src/reflexion_lab/prompts.py`: Nơi chứa các template prompt cho Actor, Evaluator và Reflector.
-- `src/reflexion_lab/mock_runtime.py`: (Cần thay thế) Logic giả lập phản hồi LLM.
-- `src/reflexion_lab/agents.py`: Cấu trúc chính của ReAct và Reflexion Agent.
-- `src/reflexion_lab/reporting.py`: Logic xuất báo cáo benchmark.
-- `run_benchmark.py`: Script chính để chạy đánh giá.
-- `autograde.py`: Công cụ hỗ trợ chấm điểm nhanh dựa trên report.
+---
+
+## 3. Cách chạy
+
+### Yêu cầu
+
+- Python 3.9+
+- Tài khoản [Groq](https://console.groq.com/) (miễn phí) để lấy API key
+
+### Cài đặt môi trường
+
+```bash
+# Tạo và kích hoạt môi trường ảo
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# macOS/Linux
+source .venv/bin/activate
+
+# Cài đặt thư viện
+pip install -r requirements.txt
+```
+
+### Cấu hình API key
+
+Tạo file `.env` ở thư mục gốc:
+
+```
+GROQ_API_KEY=your_groq_api_key_here
+```
+
+### Chạy benchmark
+
+```bash
+# Chạy đầy đủ trên 100 mẫu (khuyến nghị)
+python run_benchmark.py --dataset data/hotpot_100.json --out-dir outputs/benchmark_run
+
+# Chạy thử nhanh trên 2 mẫu
+python run_benchmark.py --dataset data/hotpot_mini.json --out-dir outputs/test_run
+
+# Tùy chỉnh số lần thử tối đa của Reflexion
+python run_benchmark.py --dataset data/hotpot_100.json --out-dir outputs/benchmark_run --reflexion-attempts 5
+```
+
+### Chấm điểm tự động
+
+```bash
+python autograde.py --report-path outputs/benchmark_run/report.json
+```
+
+---
+
+## 4. Cấu trúc dự án
+
+```
+phase1-track3-lab1-advanced-agent/
+├── src/reflexion_lab/
+│   ├── agents.py          # ReActAgent và ReflexionAgent (vòng lặp Actor→Evaluator→Reflector)
+│   ├── schemas.py         # Các kiểu dữ liệu Pydantic (RunRecord, AttemptTrace, ...)
+│   ├── prompts.py         # System prompt cho Actor, Evaluator, Reflector
+│   ├── mock_runtime.py    # Runtime LLM (đã tích hợp Groq API thật)
+│   ├── reporting.py       # Tạo báo cáo JSON và Markdown
+│   └── utils.py           # Tiện ích: normalize_answer, load_dataset, save_jsonl
+├── data/
+│   ├── hotpot_mini.json   # 2 mẫu để test nhanh
+│   └── hotpot_100.json    # 100 mẫu HotpotQA để chạy benchmark
+├── outputs/benchmark_run/ # Kết quả benchmark (được tạo tự động)
+│   ├── react_runs.jsonl
+│   ├── reflexion_runs.jsonl
+│   ├── report.json
+│   └── report.md
+├── run_benchmark.py       # Script chính
+├── autograde.py           # Công cụ chấm điểm tự động
+├── requirements.txt
+└── .env                   # GROQ_API_KEY (không commit lên git)
+```
